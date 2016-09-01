@@ -28,7 +28,9 @@ import slugify
 import string
 import sys
 import tempfile
+import time
 import zipfile
+from dateutil import parser
 from datetime import datetime,timedelta
 from zappa import Zappa, logger
 from util import detect_django_settings, detect_flask_apps
@@ -315,6 +317,16 @@ class ZappaCLI(object):
         if self.prebuild_script:
             self.execute_prebuild_script()
 
+        # Temporary version check
+        updated_time = 1472581018
+        function_response = self.zappa.lambda_client.get_function(FunctionName=self.lambda_name)
+        conf = function_response['Configuration']
+        last_updated = parser.parse(conf['LastModified'])
+        last_updated_unix = time.mktime(last_updated.timetuple())
+
+        if last_updated_unix <= updated_time:
+            click.echo(click.style("Warning!", fg="red") + " You may have upgraded Zappa since deploying this application. You will need to " + click.style("redeploy", bold=True) + " for this deployment to work properly!")
+
         # Make sure the necessary IAM execution roles are available
         if self.manage_roles:
             self.zappa.create_iam_roles()
@@ -437,8 +449,8 @@ class ZappaCLI(object):
             api_id = self.zappa.get_api_id(self.lambda_name)
             self.zappa.remove_api_key(api_id, self.api_stage)
 
-        gateway_id = self.zappa.undeploy_api_gateway( 
-            self.lambda_name, 
+        gateway_id = self.zappa.undeploy_api_gateway(
+            self.lambda_name,
             domain_name=domain_name
         )
 
@@ -640,10 +652,10 @@ class ZappaCLI(object):
         for api_key in self.zappa.get_api_keys(api_id, self.api_stage):
             tabular_print("API Gateway x-api-key", api_key)
 
-        # There literally isn't a better way to do this. 
+        # There literally isn't a better way to do this.
         # AWS provides no way to tie a APIGW domain name to its Lambda funciton.
         domain_url = self.stage_config.get('domain', None)
-        if domain_url: 
+        if domain_url:
             tabular_print("Domain URL", 'https://' + domain_url)
         else:
             tabular_print("Domain URL", "None Supplied")
@@ -832,8 +844,8 @@ class ZappaCLI(object):
 
         if 's3://' in account_key_location:
             bucket = account_key_location.split('s3://')[1].split('/')[0]
-            key_name = account_key_location.split('s3://')[1].split('/')[0]
-            s3_client.download_file(bucket, key_name, '/tmp/account.key')
+            key_name = account_key_location.split('s3://')[1].split('/')[1]
+            self.zappa.s3_client.download_file(bucket, key_name, '/tmp/account.key')
         else:
             from shutil import copyfile
             copyfile(account_key_location, '/tmp/account.key')
@@ -843,9 +855,9 @@ class ZappaCLI(object):
         # Get cert and update domain.
         from letsencrypt import get_cert_and_update_domain, cleanup
         cert_success = get_cert_and_update_domain(
-                self.zappa, 
+                self.zappa,
                 self.lambda_name,
-                self.api_stage, 
+                self.api_stage,
                 domain
             )
         cleanup()
@@ -961,8 +973,8 @@ class ZappaCLI(object):
         self.environment_variables = self.zappa_settings[
             self.api_stage].get('environment_variables', {})
 
-        self.zappa = Zappa( boto_session=session, 
-                            profile_name=self.profile_name, 
+        self.zappa = Zappa( boto_session=session,
+                            profile_name=self.profile_name,
                             aws_region=self.aws_region,
                             load_credentials=self.load_credentials
                             )
@@ -1046,7 +1058,7 @@ class ZappaCLI(object):
                         self.remote_env_file
                     )
 
-                # Local envs    
+                # Local envs
                 settings_s = settings_s + "ENVIRONMENT_VARIABLES={0}\n".format(
                         dict(self.environment_variables)
                     )
@@ -1065,11 +1077,22 @@ class ZappaCLI(object):
                 else:
                     settings_s = settings_s + "DJANGO_SETTINGS=None\n"
 
+                # AWS Events function mapping
+                event_mapping = {}
+                events = self.stage_config.get('events', [])
+                for event in events:
+                    arn = event.get('event_source', {}).get('arn')
+                    function = event.get('function')
+                    if arn and function:
+                        event_mapping[arn] = function
+                settings_s = settings_s + "AWS_EVENT_MAPPING={0!s}\n".format(event_mapping)
+
                 # Copy our Django app into root of our package.
                 # It doesn't work otherwise.
-                base = __file__.rsplit(os.sep, 1)[0]
-                django_py = ''.join(os.path.join([base, os.sep, 'ext', os.sep, 'django.py']))
-                lambda_zip.write(django_py, 'django_zappa_app.py')
+                if self.django_settings:
+                    base = __file__.rsplit(os.sep, 1)[0]
+                    django_py = ''.join(os.path.join([base, os.sep, 'ext', os.sep, 'django_zappa.py']))
+                    lambda_zip.write(django_py, 'django_zappa_app.py')
 
                 # Lambda requires a specific chmod
                 temp_settings = tempfile.NamedTemporaryFile(delete=False)

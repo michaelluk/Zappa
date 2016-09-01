@@ -13,7 +13,7 @@ from lambda_packages import lambda_packages
 from .utils import placebo_session
 
 from zappa.cli import ZappaCLI, shamelessly_promote
-from zappa.ext.django import get_django_wsgi
+from zappa.ext.django_zappa import get_django_wsgi
 from zappa.handler import LambdaHandler, lambda_handler
 from zappa.letsencrypt import get_cert_and_update_domain, create_domain_key, create_domain_csr, create_chained_certificate, get_cert, cleanup, parse_account_key, parse_csr, sign_certificate, encode_certificate, register_account, verify_challenge
 from zappa.util import detect_django_settings, copytree, detect_flask_apps, add_event_source, remove_event_source, get_event_source_status
@@ -397,19 +397,111 @@ class TestZappa(unittest.TestCase):
                 }
         lh.handler(event, None)
 
-        # Test AWS event
+        # Test AWS S3 event
         event = {
                     u'account': u'72333333333',
                     u'region': u'us-east-1',
                     u'detail': {},
-                    u'Records': [{'s3': {'configurationId': 'test_settings.aws_event'}}],
+                    u'Records': [{'s3': {'configurationId': 'test_settings.aws_s3_event'}}],
                     u'source': u'aws.events',
                     u'version': u'0',
                     u'time': u'2016-05-10T21:05:39Z',
                     u'id': u'0d6a6db0-d5e7-4755-93a0-750a8bf49d55',
                     u'resources': [u'arn:aws:events:us-east-1:72333333333:rule/tests.test_app.schedule_me']
                 }
-        lh.handler(event, None)
+        self.assertEqual("AWS S3 EVENT", lh.handler(event, None))
+
+        # Test AWS SNS event
+        event = {
+            u'account': u'72333333333',
+            u'region': u'us-east-1',
+            u'detail': {},
+            u'Records': [
+                {
+                    u'EventVersion': u'1.0',
+                    u'EventSource': u'aws:sns',
+                    u'EventSubscriptionArn': u'arn:aws:sns:EXAMPLE',
+                    u'Sns': {
+                        u'SignatureVersion': u'1',
+                        u'Timestamp': u'1970-01-01T00:00:00.000Z',
+                        u'Signature': u'EXAMPLE',
+                        u'SigningCertUrl': u'EXAMPLE',
+                        u'MessageId': u'95df01b4-ee98-5cb9-9903-4c221d41eb5e',
+                        u'Message': u'Hello from SNS!',
+                        u'Subject': u'TestInvoke',
+                        u'Type': u'Notification',
+                        u'UnsubscribeUrl': u'EXAMPLE',
+                        u'TopicArn': u'arn:aws:sns:1',
+                        u'MessageAttributes': {
+                            u'Test': {u'Type': u'String', u'Value': u'TestString'},
+                            u'TestBinary': {u'Type': u'Binary', u'Value': u'TestBinary'}
+                        }
+                    }
+                }
+            ]
+        }
+        self.assertEqual("AWS SNS EVENT", lh.handler(event, None))
+
+        # Test AWS DynamoDB event
+        event = {
+            u'Records': [
+                {
+                    u'eventID': u'1',
+                    u'eventVersion': u'1.0',
+                    u'dynamodb': {
+                        u'Keys': {u'Id': {u'N': u'101'}},
+                        u'NewImage': {u'Message': {u'S': u'New item!'}, u'Id': {u'N': u'101'}},
+                        u'StreamViewType': u'NEW_AND_OLD_IMAGES',
+                        u'SequenceNumber': u'111', u'SizeBytes': 26
+                    },
+                    u'awsRegion': u'us-west-2',
+                    u'eventName': u'INSERT',
+                    u'eventSourceARN': u'arn:aws:dynamodb:1',
+                    u'eventSource': u'aws:dynamodb'
+                }
+            ]
+        }
+        self.assertEqual("AWS DYNAMODB EVENT", lh.handler(event, None))
+
+        # Test AWS kinesis event
+        event = {
+            u'Records': [
+                {
+                    u'eventID': u'shardId-000000000000:49545115243490985018280067714973144582180062593244200961',
+                    u'eventVersion': u'1.0',
+                    u'kinesis': {
+                        u'partitionKey': u'partitionKey-3',
+                        u'data': u'SGVsbG8sIHRoaXMgaXMgYSB0ZXN0IDEyMy4=',
+                        u'kinesisSchemaVersion': u'1.0',
+                        u'sequenceNumber': u'49545115243490985018280067714973144582180062593244200961'
+                    },
+                    u'invokeIdentityArn': u'arn:aws:iam::EXAMPLE',
+                    u'eventName': u'aws:kinesis:record',
+                    u'eventSourceARN': u'arn:aws:kinesis:1',
+                    u'eventSource': u'aws:kinesis',
+                    u'awsRegion': u'us-east-1'
+                 }
+            ]
+        }
+        self.assertEqual("AWS KINESIS EVENT", lh.handler(event, None))
+
+        # Unhandled event
+        event = {
+            u'Records': [
+                {
+                    u'eventID': u'shardId-000000000000:49545115243490985018280067714973144582180062593244200961',
+                    u'eventVersion': u'1.0',
+                    u'kinesis': {
+                        u'partitionKey': u'partitionKey-3',
+                        u'data': u'SGVsbG8sIHRoaXMgaXMgYSB0ZXN0IDEyMy4=',
+                        u'kinesisSchemaVersion': u'1.0',
+                        u'sequenceNumber': u'49545115243490985018280067714973144582180062593244200961'
+                    },
+                    u'eventSourceARN': u'bad:arn:1',
+                }
+            ]
+        }
+        self.assertIsNone(lh.handler(event, None))
 
     ##
     # CLI
@@ -500,6 +592,42 @@ class TestZappa(unittest.TestCase):
         # if os.path.isfile('zappa_settings.json'):
         #     os.remove('zappa_settings.json')
 
+    def test_domain_name_match(self):
+        # Simple sanity check
+        zone = Zappa._get_best_match_zone(all_zones={ 'HostedZones': [
+            {
+                'Name': 'example.com.au.',
+                'Id': 'zone-correct'
+            }
+        ]},
+            domain='www.example.com.au')
+        assert zone == 'zone-correct'
+
+        # No match test
+        zone = Zappa._get_best_match_zone(all_zones={'HostedZones': [
+            {
+                'Name': 'example.com.au.',
+                'Id': 'zone-incorrect'
+            }
+        ]},
+            domain='something-else.com.au')
+        assert zone is None
+
+        # More involved, better match should win.
+        zone = Zappa._get_best_match_zone(all_zones={'HostedZones': [
+            {
+                'Name': 'example.com.au.',
+                'Id': 'zone-incorrect'
+            },
+            {
+                'Name': 'subdomain.example.com.au.',
+                'Id': 'zone-correct'
+            }
+        ]},
+            domain='www.subdomain.example.com.au')
+        assert zone == 'zone-correct'
+
+
     ##
     # Let's Encrypt / ACME
     ##
@@ -513,7 +641,7 @@ class TestZappa(unittest.TestCase):
         out, err = proc.communicate()
         if proc.returncode != 0:
             raise IOError("OpenSSL Error: {0}".format(err))
-        proc = subprocess.Popen(["openssl req -x509 -newkey rsa:2048 -subj '/C=US/ST=Denial/L=Springfield/O=Dis/CN=www.example.com' -passout pass:foo -keyout /tmp/key.key -out signed.crt -days 1 > /tmp/signed.crt"],
+        proc = subprocess.Popen(["openssl req -x509 -newkey rsa:2048 -subj '/C=US/ST=Denial/L=Springfield/O=Dis/CN=www.example.com' -passout pass:foo -keyout /tmp/key.key -out test_signed.crt -days 1 > /tmp/signed.crt"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
         out, err = proc.communicate()
         if proc.returncode != 0:
@@ -550,7 +678,90 @@ class TestZappa(unittest.TestCase):
 
         encode_certificate(b'123')
 
+        os.remove('test_signed.crt')
         cleanup()
+
+    ##
+    # Django
+    ##
+
+    def test_detect_dj(self):
+        # Sanity
+        settings_modules = detect_django_settings()
+
+    def test_dj_wsgi(self):
+        # Sanity
+        settings_modules = detect_django_settings()
+
+        settings = """
+# Build paths inside the project like this: os.path.join(BASE_DIR, ...)
+import os
+BASE_DIR = os.path.dirname(os.path.dirname(__file__))
+
+# Quick-start development settings - unsuitable for production
+# See https://docs.djangoproject.com/en/1.7/howto/deployment/checklist/
+
+# SECURITY WARNING: keep the secret key used in production secret!
+SECRET_KEY = 'alskdfjalsdkf=0*%do-ayvy*m2k=vss*$7)j8q!@u0+d^na7mi2(^!l!d'
+
+# SECURITY WARNING: don't run with debug turned on in production!
+DEBUG = True
+
+TEMPLATE_DEBUG = True
+
+ALLOWED_HOSTS = []
+
+# Application definition
+
+INSTALLED_APPS = (
+    'django.contrib.admin',
+    'django.contrib.auth',
+    'django.contrib.contenttypes',
+    'django.contrib.sessions',
+    'django.contrib.messages',
+    'django.contrib.staticfiles',
+)
+
+MIDDLEWARE_CLASSES = (
+    'django.contrib.sessions.middleware.SessionMiddleware',
+    'django.middleware.common.CommonMiddleware',
+    'django.middleware.csrf.CsrfViewMiddleware',
+    'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'django.contrib.auth.middleware.SessionAuthenticationMiddleware',
+    'django.contrib.messages.middleware.MessageMiddleware',
+    'django.middleware.clickjacking.XFrameOptionsMiddleware',
+)
+
+ROOT_URLCONF = 'blah.urls'
+WSGI_APPLICATION = 'hackathon_starter.wsgi.application'
+
+# Database
+# https://docs.djangoproject.com/en/1.7/ref/settings/#databases
+
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': os.path.join(BASE_DIR, 'db.sqlite3'),
+    }
+}
+
+# Internationalization
+# https://docs.djangoproject.com/en/1.7/topics/i18n/
+
+LANGUAGE_CODE = 'en-us'
+TIME_ZONE = 'UTC'
+USE_I18N = True
+USE_L10N = True
+USE_TZ = True
+        """
+
+        djts = open("dj_test_settings.py", "w")
+        djts.write(settings)
+        djts.close()
+
+        app = get_django_wsgi('dj_test_settings')
+        os.remove('dj_test_settings.py')
+        os.remove('dj_test_settings.pyc')
 
     ##
     # Util / Misc
